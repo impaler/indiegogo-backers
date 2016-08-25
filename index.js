@@ -39,9 +39,9 @@ function* run() {
         console.log('Pledges found', pledges.length)
     }
 
-    var pledges = yield nightmare.evaluate(parseQueryPledges, PLEDGE_ITEM_SELECTOR)
+    var allPledges = yield nightmare.evaluate(parseQueryPledges, PLEDGE_ITEM_SELECTOR)
     yield nightmare.end()
-    return pledges
+    return allPledges
 }
 
 function queryPledges(PLEDGE_ITEM_SELECTOR) {
