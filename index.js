@@ -1,67 +1,107 @@
-const INDIEGOGO_URL = 'https://www.indiegogo.com/projects/haxeflixel-games-software#/backers'
-const SHOW_MORE_SELECTOR = '.campaignBackers-seeMore'
-const SHOW_MORE_BUTTON_SELECTOR = '.campaignBackers-seeMore a'
-const PLEDGE_ITEM_SELECTOR = '.campaignBackers-pledge'
 const Nightmare = require('nightmare')
 const fs = require('fs')
-const vo = require('vo');
+const vo = require('vo')
+
+if (typeof process.env.PROJECT_NAME === 'undefined')
+    throw 'Please provide a indiegogo project name as an environment variable PROJECT_NAME'
+
+const INDIEGOGO_URL = `https://www.indiegogo.com/projects/${process.env.PROJECT_NAME}#/backers`
+const SHOW_MORE_SELECTOR = '.campaignBackers > .campaignBackers-seeMore'
+const SHOW_MORE_BUTTON_SELECTOR = '.campaignBackers-seeMore > a'
+const BACKERS_COMPONENT_SELECTOR = 'campaign-backers > .campaignBackers'
+const WAIT_TIME = 1000
+const DEBUG = typeof process.env.DEBUG !== 'undefined'
+const DEBUG_OPTIONS = {
+    show: true,
+    openDevTools: true,
+    waitTimeout: 90000000
+}
+
+var nightmareOptions = DEBUG ? DEBUG_OPTIONS : {}
 
 vo(run)(function (err, result) {
-    if (err) throw err;
+    if (err) throw err
 
     console.log('Total of', result.length, 'backers')
+    result = result.sort(sortAmounts).reverse()
+
     fs.writeFileSync('backers.json', JSON.stringify(result, null, 4))
     process.exit(0)
-});
+})
 
 function* run() {
-    var nightmare = Nightmare({
-        show: false,
-        openDevTools: true,
-        waitTimeout: 90000000
-    })
+    console.log(`Gathering info from ${INDIEGOGO_URL}`)
+    var nightmare = Nightmare(nightmareOptions)
         .goto(INDIEGOGO_URL)
-        .wait(1000)
+        .wait(WAIT_TIME)
         .wait(SHOW_MORE_BUTTON_SELECTOR)
 
     var moreExists = true
-    var count = 1
     while (moreExists) {
+        var currentHeight = yield nightmare.evaluate(function () {
+            return document.body.scrollHeight
+        })
+
+        yield nightmare.scrollTo(currentHeight, 0)
+            .wait(WAIT_TIME)
+
         yield nightmare
             .click(SHOW_MORE_BUTTON_SELECTOR)
-            .wait(1000)
+            .wait(WAIT_TIME)
 
-        console.log('Show more button count', count)
-        count++
+        var currentHeight = yield nightmare.evaluate(function () {
+            return document.body.scrollHeight
+        })
 
-        moreExists = yield nightmare.visible('.campaignBackers-seeMore')
-        var pledges = yield nightmare.evaluate(queryPledges, PLEDGE_ITEM_SELECTOR)
-        console.log('Pledges found', pledges.length)
+        yield nightmare.scrollTo(currentHeight, 0)
+            .wait(WAIT_TIME)
+
+        moreExists = yield nightmare.evaluate(SHOW_MORE_SELECTOR => {
+            return document.querySelectorAll(SHOW_MORE_SELECTOR).length > 1
+        }, SHOW_MORE_SELECTOR)
+
+        console.log('Loading more backers...')
     }
 
-    var allPledges = yield nightmare.evaluate(parseQueryPledges, PLEDGE_ITEM_SELECTOR)
+    console.log('All backers loaded')
+
+    var allPledges = yield nightmare.evaluate(resolveAllBackers, BACKERS_COMPONENT_SELECTOR)
     yield nightmare.end()
+
     return allPledges
 }
 
-function queryPledges(PLEDGE_ITEM_SELECTOR) {
-    return Array.prototype.map.call(
-        document.querySelectorAll(PLEDGE_ITEM_SELECTOR),
-        link => link
-    )
-}
+function resolveAllBackers(BACKERS_COMPONENT_SELECTOR) {
+    var pledgeItemElements = document.querySelector(BACKERS_COMPONENT_SELECTOR).children
+    var pledgeItems = Array.prototype.map.call(pledgeItemElements, parsePledge)
 
-function parseQueryPledges(PLEDGE_ITEM_SELECTOR) {
-    var pledges = document.querySelectorAll(PLEDGE_ITEM_SELECTOR)
-    var pledgeItems = Array.prototype.map.call(pledges, pledgeElement => {
+    return pledgeItems
+
+    function parsePledge(pledgeElement) {
         var pledge = {
             imgSrc: pledgeElement.querySelector('img').src,
             name: pledgeElement.querySelector('.campaignBackers-pledge-backer-details-text').innerText,
             url: pledgeElement.querySelector('.campaignBackers-pledge-backer-details-text').href
         }
-        var amount = pledgeElement.querySelector('.campaignBackers-pledge-amount-bold').innerText.replace(/[^.\d$]/g, '')
-        if (amount && amount !== '') pledge.amount = amount
+        var amount = pledgeElement.querySelector('.campaignBackers-pledge-amount-bold').innerText
+        if (amount.match(/\$/)) {
+            pledge.amount = amount.replace(/[^.\d$]/g, '')
+        } else {
+            pledge.amount = amount
+        }
         return pledge
-    })
-    return pledgeItems
+    }
+}
+
+function sortAmounts(a, b) {
+    return parseAmount(a) - parseAmount(b)
+}
+
+function parseAmount(backer) {
+    var amount = backer.amount
+    if (typeof amount === 'undefined' || amount === '' || amount === 'Private') {
+        amount = "$0"
+    }
+    var value = parseInt(amount.replace('$', ''))
+    return value
 }
